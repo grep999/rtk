@@ -400,8 +400,14 @@ fn contains_substitution(cmd: &str) -> bool {
 
 // `>&N`/`>&-` (and `N>&M`) is fd-dup/close; bare `>&` before a word is
 // `>word 2>&1` — a file target.
+// `<<`/`<<-` is a heredoc — the next token is its delimiter (inline body
+// marker), not a file target. Classify the operator first (#3980) so the
+// `/dev/null` exemption only applies where a file is genuinely written.
 pub(crate) fn redirect_has_file_target(tokens: &[ParsedToken], i: usize) -> bool {
     let value = &tokens[i].value;
+    if value == "<<" || value == "<<-" {
+        return true;
+    }
     if let Some(pos) = value.find(">&") {
         let tail = &value[pos + 2..];
         if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit() || c == '-') {
@@ -1400,6 +1406,19 @@ mod tests {
         // nosemgrep: sensitive-path-reference -- test fixture
         assert!(contains_unattestable_construct("cat < /etc/passwd"));
         assert!(contains_unattestable_construct("cat << EOF"));
+    }
+
+    #[test]
+    fn test_unattestable_heredoc_delimiter_is_not_file_target() {
+        // Regression for #3980: a heredoc delimiter (e.g. `/dev/null`) is not a
+        // file target, so the `/dev/null` exemption must not misfire on `<<`.
+        assert!(contains_unattestable_construct("git status << /dev/null"));
+        assert!(contains_unattestable_construct("git status <</dev/null"));
+        assert!(contains_unattestable_construct("git status <<- /dev/null"));
+        assert!(contains_unattestable_construct("git status <<-EOF"));
+        // `<<EOF` (no space) was already correctly flagged before this fix.
+        assert!(contains_unattestable_construct("git status <<EOF"));
+        assert!(contains_unattestable_construct("git status <<'EOF'"));
     }
 
     #[test]
